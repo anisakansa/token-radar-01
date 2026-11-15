@@ -14,8 +14,10 @@
 //    below-floor candidates are ranked too.
 // 2. The multiple. For each category, the median market-cap / TVL of the
 //    protocols in that category whose token already trades in the snapshot
-//    (three or more comparables required, otherwise the overall median). The
-//    median is clamped to [0.05, 1.00]: a bridge's token is not worth twice its
+//    (three or more comparables required, otherwise the overall median). A
+//    comparable needs a real market cap above zero and a real TVL, and
+//    centralised exchanges are left out: their tokens are not priced on
+//    their TVL at all. The median is clamped to [0.05, 1.00]: a bridge's
 //    transient TVL, and a liquid-staking token is not worth 4% of the stake it
 //    wraps. A protocol on more chains multiplies by 1 + 0.02 per extra chain,
 //    capped at 1.10: distribution is worth something, but not much.
@@ -164,9 +166,12 @@ export function isRankable(p: Protocol): boolean {
   );
 }
 
+/** The standard median: the middle value, or the mean of the two middle values. */
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)]!;
+  const n = sorted.length;
+  if (n % 2 === 1) return sorted[(n - 1) / 2]!;
+  return (sorted[n / 2 - 1]! + sorted[n / 2]!) / 2;
 }
 
 function clamp(value: number, low: number, high: number): number {
@@ -192,7 +197,11 @@ export function calibrate(snapshot: Snapshot): Calibration {
   const byCategory = new Map<string, number[]>();
   const all: number[] = [];
   for (const p of snapshot.protocols) {
-    if (isPreToken(p) || p.mcap_usd === null || p.tvl_usd <= 0) continue;
+    // A live comparable needs a real market cap and a real TVL. A recorded
+    // mcap of 0 means the token trades but the cap is unlisted, not that it is
+    // worthless, and a CEX token's cap is not priced on its TVL at all
+    // (one exchange records 69x), so both are left out of the calibration.
+    if (isPreToken(p) || p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0 || p.category === 'CEX') continue;
     const ratio = p.mcap_usd / p.tvl_usd;
     all.push(ratio);
     const key = p.category ?? '(none)';
@@ -433,7 +442,6 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
   const calibration = calibrate(snapshot);
   const watchlist = new Set(snapshot.watchlist);
   const early = snapshot.protocols.filter(isRankable);
-  const live = snapshot.protocols.filter((p) => !isPreToken(p));
   const rows = early
     .map((p) => {
       const model = scoreProtocol(p, snapshot.as_of, calibration);

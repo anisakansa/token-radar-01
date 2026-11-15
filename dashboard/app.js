@@ -252,7 +252,18 @@
 
   render();
   if (location.hash.length > 2 && location.hash.slice(0, 2) === '#/') {
-    openDetail(decodeURIComponent(location.hash.slice(2)));
+    var frag = decodeURIComponent(location.hash.slice(2));
+    if (frag.indexOf('filter?') === 0) {
+      // Deep link to a filtered board, e.g. #/filter?category=Lending&watchlist=1.
+      var params = new URLSearchParams(frag.slice(7));
+      if (params.get('category')) { state.category = params.get('category'); $('category').value = state.category; }
+      if (params.get('chain')) { state.chain = params.get('chain'); $('chain').value = state.chain; }
+      if (params.get('watchlist')) { state.watchlist = true; $('watchlist-only').checked = true; }
+      if (params.get('q')) { state.q = params.get('q'); $('q').value = state.q; }
+      render();
+    } else {
+      openDetail(frag);
+    }
   }
 
   $('foot-note').textContent =
