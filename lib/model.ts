@@ -83,6 +83,8 @@ export interface BoardRow {
   age_days: number | null;
   is_watchlist: boolean;
   value_model: ValueModel;
+  /** The implied launch value at the row's top level, so the gate can read it off each row. */
+  implied_value_usd: number;
   farm_steps: string[];
 }
 
@@ -457,12 +459,13 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
         age_days: ageDays(p, snapshot.as_of),
         is_watchlist: watchlist.has(p.slug),
         value_model: model,
+        implied_value_usd: model.implied_usd,
         farm_steps: detail.map((s) => s.text),
         farm_detail: detail,
       };
       return row;
     })
-    .sort((a, b) => b.value_model.implied_usd - a.value_model.implied_usd || a.slug.localeCompare(b.slug));
+    .sort((a, b) => b.implied_value_usd - a.implied_value_usd || a.slug.localeCompare(b.slug));
   rows.forEach((row, index) => {
     row.rank = index + 1;
   });
@@ -501,13 +504,28 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
   const missing = snapshot.watchlist.filter((slug) => !board.some((row) => row.slug === slug));
   if (missing.length > 0) return `the board drops ${missing.length} watchlist protocols: ${missing.slice(0, 5).join(', ')}`;
   for (const row of board) {
+    // The gate reads the implied value off the row's top level, not out of
+    // value_model: a row without it fails the gate even when the model is
+    // right, so check the top-level field itself, and that it agrees with
+    // the model's own figure.
+    if (typeof row.implied_value_usd !== 'number' || !Number.isFinite(row.implied_value_usd) || row.implied_value_usd < 1) {
+      return `${row.slug}: no top-level implied_value_usd: the gate reads the value off the row, not out of value_model`;
+    }
+    if (row.implied_value_usd !== row.value_model.implied_usd) {
+      return `${row.slug}: top-level implied_value_usd $${row.implied_value_usd.toLocaleString('en-US')} disagrees with value_model $${row.value_model.implied_usd.toLocaleString('en-US')}`;
+    }
     if (row.farm_steps.length < 3 || row.farm_steps.length > 12) {
       return `${row.slug}: ${row.farm_steps.length} farm steps: the gate wants 3 to 12`;
     }
     for (const step of row.farm_steps) {
       if (step.length < 20 || step.length > 600) return `${row.slug}: a farm step is ${step.length} characters: the gate wants 20 to 600`;
     }
-    if (row.value_model.implied_usd > 100_000_000_000_000) return `${row.slug}: implied value $${row.value_model.implied_usd.toLocaleString('en-US')} exceeds the $100T cap`;
+    if (row.implied_value_usd > 100_000_000_000_000) return `${row.slug}: implied value $${row.implied_value_usd.toLocaleString('en-US')} exceeds the $100T cap`;
+  }
+  for (let i = 1; i < board.length; i += 1) {
+    if (board[i]!.implied_value_usd > board[i - 1]!.implied_value_usd) {
+      return `implied values are not sorted descending at row ${i + 1}`;
+    }
   }
   for (let i = 0; i < board.length; i += 1) {
     if (board[i]!.rank !== i + 1) return `ranks are not sequential at row ${i + 1}`;

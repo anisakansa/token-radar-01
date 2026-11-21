@@ -55,6 +55,24 @@ if (issue !== null) {
 
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+/**
+ * The gate reads board.json off disk, not the in-memory board: verify the
+ * written file itself carries a top-level implied_value_usd on every row,
+ * sorted descending. The in-memory check above cannot catch a field that
+ * never reaches the file, which is exactly how round 1 went invalid.
+ */
+const written = JSON.parse(readFileSync(join(out, 'board.json'), 'utf8')) as { rows: { slug: string; implied_value_usd?: unknown }[] };
+for (let i = 0; i < written.rows.length; i += 1) {
+  const row = written.rows[i]!;
+  if (typeof row.implied_value_usd !== 'number' || !Number.isFinite(row.implied_value_usd) || row.implied_value_usd < 1) {
+    process.stderr.write(`token radar: board.json row ${i + 1} (${row.slug}): no top-level implied_value_usd on disk\n`);
+    process.exit(1);
+  }
+  if (i > 0 && row.implied_value_usd > (written.rows[i - 1]!.implied_value_usd as number)) {
+    process.stderr.write(`token radar: board.json: implied values not sorted descending at row ${i + 1}\n`);
+    process.exit(1);
+  }
+}
 writeFileSync(join(out, 'data.js'), dataScript(radar));
 
 /** Copy one directory's regular files into `to`, skipping names that start with a dot. */
