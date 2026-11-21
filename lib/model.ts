@@ -70,6 +70,57 @@ export interface FarmStep {
   text: string;
   cost: string;
   time: string;
+  /** One-off dollars this step spends (0 when the step costs nothing but time). */
+  cost_usd: number;
+  /** Dollars this step repeats every week (0 when it is a one-off or free). */
+  weekly_usd: number;
+}
+
+/** A farm plan's money, totalled from its steps: deposit, upfront, weekly top-ups over the hold, and the all-in total. */
+export interface FarmTotal {
+  /** The deposit the plan sizes from (the main action's capital). */
+  deposit_usd: number;
+  /** One-off dollars: every cost_usd across the steps. */
+  upfront_usd: number;
+  /** Dollars repeated every week (the weekly top-up step). */
+  weekly_usd: number;
+  /** Days the position must stay open. */
+  hold_days: number;
+  /** Whole weeks inside the hold (rounded up: a 90-day hold is 13 weekly top-ups). */
+  weeks: number;
+  /** All-in cost: upfront + weekly x weeks. */
+  total_usd: number;
+  /** The all-in cost as a percent of the protocol's implied launch value. */
+  cost_pct_of_implied: number;
+}
+
+/** One validation test, with the real numbers the snapshot gives. */
+export interface ValidationTest {
+  name: string;
+  /** Live comparables the multiple was fitted on. */
+  fit_n: number;
+  /** Live protocols the fitted model was tested on. */
+  test_n: number;
+  /** Median |predicted mcap - actual mcap| / actual mcap, in percent. */
+  median_abs_err_pct: number;
+  /** Tested protocols whose predicted mcap landed within 2x of the actual mcap. */
+  within_2x: number;
+  /** The same, as a percent of the tested protocols. */
+  within_2x_pct: number;
+}
+
+/** The model's validation, all computed from the snapshot's live protocols at build time. */
+export interface Validation {
+  /** Live comparables the tests draw on (token trades, mcap > 0, TVL > 0, not a CEX). */
+  live_n: number;
+  /** Held out two ways: fit on half the live comparables, test on the other half, both directions. */
+  held_out: ValidationTest[];
+  /** Walk forward: fit on the older half by listing date, test on the newer half. */
+  walk_forward: ValidationTest & { cut: string };
+  /** Leave-one-out backtest: each live protocol predicted from all the others. */
+  loo: ValidationTest;
+  /** Split test per term: the LOO backtest with one term dropped (growth, maturity, chain factor). */
+  ablation: { term: string; median_abs_err_pct: number; within_2x_pct: number }[];
 }
 
 export interface BoardRow {
@@ -88,7 +139,18 @@ export interface BoardRow {
   farm_steps: string[];
 }
 
-/** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
+export interface IntegrityCheck {
+  label: string;
+  pass: boolean;
+  detail: string;
+}
+
+/** Checks main.ts runs over the written output (board, screenshots, dashboard bytes), for the page's integrity strip. */
+export interface Integrity {
+  checks: IntegrityCheck[];
+  dashboard_bytes: number;
+  screenshots: { name: string; bytes: number }[];
+}
 export interface LiveRow {
   slug: string;
   name: string;
@@ -113,7 +175,11 @@ export interface Radar {
   /** Category -> { live comparables, median multiple } for the calibration table. */
   calibration: { category: string; live_n: number; median: number; used: number }[];
   overall_median: number;
-  rows: (BoardRow & { farm_detail: FarmStep[] })[];
+  /** The model's validation, computed from the snapshot's live protocols (see validateModel). */
+  validation: Validation;
+  /** Integrity checks main.ts runs over the written output; attached after the copies land. */
+  integrity?: Integrity;
+  rows: (BoardRow & { farm_detail: FarmStep[]; farm_total: FarmTotal })[];
   /** The live-token protocols, by market cap, set aside from the pre-token ranking. */
   live: LiveRow[];
 }
@@ -227,7 +293,8 @@ export function categoryMultiple(p: Protocol, calibration: Calibration): { multi
   return { multiple: clamp(calibration.overall, 0.05, 1.0), basis: 'overall median (too few live comps in category)' };
 }
 
-export function scoreProtocol(p: Protocol, asOf: string, calibration: Calibration): ValueModel {
+/** Score one protocol against a given calibration: the same formula the board uses, so the validation tests the shipped model, not a cousin of it. */
+export function scoreWithCalibration(p: Protocol, asOf: string, calibration: Calibration): ValueModel {
   const { multiple: catMultiple, basis } = categoryMultiple(p, calibration);
   const chainFactor = 1 + 0.02 * (Math.min(p.chains.length, 6) - 1);
   const multiple = catMultiple * chainFactor;
@@ -236,6 +303,115 @@ export function scoreProtocol(p: Protocol, asOf: string, calibration: Calibratio
   const maturity = 0.6 + (Math.min(Math.max(age ?? 365, 0), 1095) / 1095) * 0.4;
   const implied = Math.max(1, Math.round(p.tvl_usd * multiple * growth * maturity));
   return { multiple, cat_multiple: catMultiple, cat_basis: basis, chain_factor: chainFactor, growth, maturity, implied_usd: implied };
+}
+
+export function scoreProtocol(p: Protocol, asOf: string, calibration: Calibration): ValueModel {
+  return scoreWithCalibration(p, asOf, calibration);
+}
+
+/** The live comparables the validation draws on: a token that trades, a real market cap and a real TVL, no CEX. */
+export function liveComparables(snapshot: Snapshot): Protocol[] {
+  return snapshot.protocols.filter(
+    (p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0 && p.category !== 'CEX',
+  );
+}
+
+/** The absolute error of one prediction, as a share of the actual market cap. */
+function absErr(predicted: number, actual: number): number {
+  return Math.abs(predicted - actual) / actual;
+}
+
+/** One validation test from a fit set and a test set, using the entry's own scoring with the fit set's calibration. */
+function runTest(name: string, fitSet: Protocol[], testSet: Protocol[], asOf: string, drop?: 'growth' | 'maturity' | 'chain'): ValidationTest {
+  const fitSnapshot: Snapshot = { as_of: asOf, floor_usd: 0, source_note: '', watchlist: [], protocols: fitSet };
+  const calibration = calibrate(fitSnapshot);
+  let within2x = 0;
+  const errs: number[] = [];
+  for (const p of testSet) {
+    const scored = scoreWithCalibration(p, asOf, calibration);
+    let predicted = scored.implied_usd;
+    if (drop === 'growth') predicted = Math.max(1, Math.round(predicted / scored.growth));
+    if (drop === 'maturity') predicted = Math.max(1, Math.round(predicted / scored.maturity));
+    if (drop === 'chain') predicted = Math.max(1, Math.round(predicted / scored.chain_factor));
+    errs.push(absErr(predicted, p.mcap_usd!));
+    if (predicted >= p.mcap_usd! / 2 && predicted <= p.mcap_usd! * 2) within2x += 1;
+  }
+  const med = median(errs);
+  return {
+    name,
+    fit_n: fitSet.length,
+    test_n: testSet.length,
+    median_abs_err_pct: Math.round(med * 1000) / 10,
+    within_2x: within2x,
+    within_2x_pct: Math.round((within2x / testSet.length) * 1000) / 10,
+  };
+}
+
+/**
+ * Validate the value model against the snapshot's own live protocols, where the
+ * market cap is known and the model can be scored. Four views, all real numbers:
+ * held out two ways, walk forward by listing date, a leave-one-out backtest, and
+ * a split test per term (each term dropped from the LOO backtest in turn).
+ *
+ * What the numbers say on this snapshot: the category median is a rough yardstick,
+ * not a price forecast. The live comparables' mcap/TVL ratios spread widely inside
+ * a category, so the median error is large (about nine-tenths of the market cap)
+ * and only about one in five predictions lands within 2x. The terms move the
+ * error by less than a point: they fine-tune a ranking inside a category, they do
+ * not rescue the spread. The board says so on the page instead of hiding it: the
+ * model ranks launches by the market's own pricing, it does not predict a price.
+ */
+export function validateModel(snapshot: Snapshot): Validation {
+  const live = liveComparables(snapshot);
+  const bySlug = [...live].sort((a, b) => a.slug.localeCompare(b.slug));
+  const halfA = bySlug.filter((_, i) => i % 2 === 0);
+  const halfB = bySlug.filter((_, i) => i % 2 === 1);
+  const heldOut = [
+    runTest('Held out, half A fits half B', halfA, halfB, snapshot.as_of),
+    runTest('Held out, half B fits half A', halfB, halfA, snapshot.as_of),
+  ];
+  const dated = live.filter((p) => p.listed_at !== null).sort((a, b) => (a.listed_at ?? '').localeCompare(b.listed_at ?? ''));
+  const cut = dated[Math.floor(dated.length / 2)]!.listed_at!;
+  const older = dated.filter((p) => (p.listed_at ?? '') < cut);
+  const newer = dated.filter((p) => (p.listed_at ?? '') >= cut);
+  const walkForward = { ...runTest('Walk forward, older fits newer', older, newer, snapshot.as_of), cut };
+  const looFit = (p: Protocol): Protocol[] => live.filter((q) => q.slug !== p.slug);
+  /** One leave-one-out pass, optionally with a term dropped: each live protocol predicted from all the others. */
+  function looPass(drop?: 'growth' | 'maturity' | 'chain'): { median_abs_err_pct: number; within_2x: number; within_2x_pct: number } {
+    const errs: number[] = [];
+    let within = 0;
+    for (const p of live) {
+      const fitSnapshot: Snapshot = { as_of: snapshot.as_of, floor_usd: 0, source_note: '', watchlist: [], protocols: looFit(p) };
+      const scored = scoreWithCalibration(p, snapshot.as_of, calibrate(fitSnapshot));
+      let predicted = scored.implied_usd;
+      if (drop === 'growth') predicted = Math.max(1, Math.round(predicted / scored.growth));
+      if (drop === 'maturity') predicted = Math.max(1, Math.round(predicted / scored.maturity));
+      if (drop === 'chain') predicted = Math.max(1, Math.round(predicted / scored.chain_factor));
+      errs.push(absErr(predicted, p.mcap_usd!));
+      if (predicted >= p.mcap_usd! / 2 && predicted <= p.mcap_usd! * 2) within += 1;
+    }
+    return {
+      median_abs_err_pct: Math.round(median(errs) * 1000) / 10,
+      within_2x: within,
+      within_2x_pct: Math.round((within / live.length) * 1000) / 10,
+    };
+  }
+  const looFull = looPass();
+  const loo: ValidationTest = {
+    name: 'Leave-one-out backtest',
+    fit_n: live.length - 1,
+    test_n: live.length,
+    median_abs_err_pct: looFull.median_abs_err_pct,
+    within_2x: looFull.within_2x,
+    within_2x_pct: looFull.within_2x_pct,
+  };
+  // Split test per term: the same LOO pass with one term dropped, so each term's
+  // contribution is measured against the identical fit and test sets.
+  const ablation = (['growth', 'maturity', 'chain'] as const).map((term) => {
+    const t = looPass(term);
+    return { term: `without ${term}`, median_abs_err_pct: t.median_abs_err_pct, within_2x_pct: t.within_2x_pct };
+  });
+  return { live_n: live.length, held_out: heldOut, walk_forward: walkForward, loo, ablation };
 }
 
 /** The deposit the farm plan sizes from, by TVL tier. */
@@ -397,18 +573,24 @@ export function farmSteps(p: Protocol, asOf: string): FarmStep[] {
       text: 'Open a fresh wallet for this farm only, write the seed phrase on paper and store it offline. Never reuse a wallet that holds your main funds.',
       cost: '—',
       time: '10 min',
+      cost_usd: 0,
+      weekly_usd: 0,
     },
-    { text: mainAction(p, capital), cost: money(capital), time: '30 min' },
-    { text: secondAction(p, capital), cost: money(Math.round(capital / 2)), time: '20 min' },
+    { text: mainAction(p, capital), cost: money(capital), time: '30 min', cost_usd: capital, weekly_usd: 0 },
+    { text: secondAction(p, capital), cost: money(Math.round(capital / 2)), time: '20 min', cost_usd: Math.round(capital / 2), weekly_usd: 0 },
     {
       text: `Once a week, repeat the main action with ${money(Math.round(capital / 4))} or top up the existing position, so the wallet shows steady use rather than one burst.`,
       cost: `${money(Math.round(capital / 4))} / week`,
       time: '15 min / week',
+      cost_usd: 0,
+      weekly_usd: Math.round(capital / 4),
     },
     {
       text: `Keep the position open for at least ${holdDays} days. Do not close it early: snapshots reward wallets that were present over time, not wallets that farmed and left.`,
       cost: '—',
       time: `${holdDays} days`,
+      cost_usd: 0,
+      weekly_usd: 0,
     },
   ];
   if (p.chains.length > 1) {
@@ -417,12 +599,16 @@ export function farmSteps(p: Protocol, asOf: string): FarmStep[] {
       text: `Bridge ${money(Math.round(capital / 2))} to ${second} and repeat the main action there, so the position exists on two chains and the wallet is counted on both.`,
       cost: money(Math.round(capital / 2)),
       time: '30 min',
+      cost_usd: Math.round(capital / 2),
+      weekly_usd: 0,
     });
   } else {
     steps.push({
       text: `Keep ${money(20)} of ${chain}'s gas token in the farming wallet at all times, so a snapshot or a claim never strands the position for lack of gas.`,
       cost: money(20),
       time: '5 min',
+      cost_usd: 20,
+      weekly_usd: 0,
     });
   }
   steps.push(
@@ -430,14 +616,47 @@ export function farmSteps(p: Protocol, asOf: string): FarmStep[] {
       text: `Once a week, open ${p.name}'s points or quest page and check the farming wallet shows the position and any points earned; if it does not, fix it before the next week.`,
       cost: '—',
       time: '10 min / week',
+      cost_usd: 0,
+      weekly_usd: 0,
     },
     {
       text: 'Log every transaction hash, the date and the amount in a note. If a claim opens, the log is the proof of what the wallet did and when.',
       cost: '—',
       time: '5 min',
+      cost_usd: 0,
+      weekly_usd: 0,
     },
   );
   return steps;
+}
+
+/**
+ * The farm plan's money, totalled from its own steps: the deposit, the one-off
+ * dollars, the weekly top-ups over the hold, and the all-in total, with the
+ * total set against the protocol's implied launch value so the reader can see
+ * what the chase costs next to what it chases.
+ */
+export function farmPlan(p: Protocol, asOf: string, impliedUsd: number): { steps: FarmStep[]; total: FarmTotal } {
+  const steps = farmSteps(p, asOf);
+  const deposit = capitalFor(p);
+  const upfront = steps.reduce((sum, s) => sum + s.cost_usd, 0);
+  const weekly = steps.reduce((sum, s) => sum + s.weekly_usd, 0);
+  const age = ageDays(p, asOf);
+  const holdDays = age === null ? 45 : age >= 365 ? 90 : age >= 180 ? 60 : 30;
+  const weeks = Math.ceil(holdDays / 7);
+  const total = upfront + weekly * weeks;
+  return {
+    steps,
+    total: {
+      deposit_usd: deposit,
+      upfront_usd: upfront,
+      weekly_usd: weekly,
+      hold_days: holdDays,
+      weeks,
+      total_usd: total,
+      cost_pct_of_implied: Math.round((total / Math.max(1, impliedUsd)) * 1000000) / 10000,
+    },
+  };
 }
 
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Radar } {
@@ -447,8 +666,8 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
   const rows = early
     .map((p) => {
       const model = scoreProtocol(p, snapshot.as_of, calibration);
-      const detail = farmSteps(p, snapshot.as_of);
-      const row: BoardRow & { farm_detail: FarmStep[] } = {
+      const plan = farmPlan(p, snapshot.as_of, model.implied_usd);
+      const row: BoardRow & { farm_detail: FarmStep[]; farm_total: FarmTotal } = {
         rank: 0,
         slug: p.slug,
         name: p.name,
@@ -460,8 +679,9 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
         is_watchlist: watchlist.has(p.slug),
         value_model: model,
         implied_value_usd: model.implied_usd,
-        farm_steps: detail.map((s) => s.text),
-        farm_detail: detail,
+        farm_steps: plan.steps.map((s) => s.text),
+        farm_detail: plan.steps,
+        farm_total: plan.total,
       };
       return row;
     })
@@ -492,6 +712,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
       live_total: snapshot.protocols.filter((p) => !isPreToken(p)).length,
       calibration: calibrationRows,
       overall_median: calibration.overall,
+      validation: validateModel(snapshot),
       rows,
       live,
     },

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Token Radar — the next launch, ranked by the snapshot's own figures</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -34,6 +35,22 @@
       <tbody></tbody>
     </table></div>
     <p class="model-excl" id="model-excl"></p>
+  </section>
+
+  <section class="validation" aria-labelledby="validation-heading">
+    <h2 id="validation-heading">Model validation — scored against the live protocols</h2>
+    <p id="validation-intro"></p>
+    <div class="cal-wrap"><table class="cal" id="validation-table">
+      <thead><tr><th>Test</th><th class="num">Fit on</th><th class="num">Tested on</th><th class="num">Median error</th><th class="num">Within 2&times;</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <p class="model-excl" id="validation-ablation"></p>
+    <p class="model-excl" id="validation-read"></p>
+  </section>
+
+  <section class="strips" aria-label="Key figures and integrity checks">
+    <dl class="kpi" id="kpi-strip"></dl>
+    <ul class="integrity" id="integrity-strip"></ul>
   </section>
 
   <section class="controls" aria-label="Board controls">

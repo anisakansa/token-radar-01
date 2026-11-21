@@ -58,6 +58,20 @@ a { color: var(--accent); }
 .cal td.used { font-family: var(--font-num); font-weight: 650; color: var(--ink); }
 .model .model-excl { font-size: 13px; }
 
+.validation { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px 28px; margin-bottom: 24px; }
+.validation h2 { margin-bottom: 8px; }
+.validation p { color: var(--muted); max-width: 78ch; margin-top: 8px; }
+.validation .model-excl { font-size: 13px; }
+
+.strips { margin-bottom: 24px; }
+.kpi { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin: 0; }
+.kpi > div { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+.kpi dt { color: var(--muted); font-size: 12px; }
+.kpi dd { margin: 4px 0 0; font-family: var(--font-num); font-size: 16px; font-weight: 650; }
+.integrity { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 12px 0 0; padding: 0; color: var(--muted); font-size: 13px; }
+.integrity li.pass span { color: var(--accent); font-weight: 650; }
+.integrity li.fail span { color: var(--warn); font-weight: 650; }
+
 .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
 .controls label { color: var(--muted); font-size: 14px; display: flex; align-items: center; gap: 6px; }
 .controls input[type="search"] { width: 240px; }
@@ -105,12 +119,16 @@ a { color: var(--accent); }
 .steps li::before { content: counter(step); font-family: var(--font-num); font-weight: 650; color: var(--accent); }
 .steps .cost { font-family: var(--font-num); font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
 .steps .cost b { display: block; color: var(--ink); font-weight: 650; }
+.verdict { background: var(--accent-soft); border-radius: var(--radius); padding: 12px 14px; margin-top: 10px; }
+.verdict p { color: var(--ink); }
+.verdict p + p { margin-top: 6px; }
 
 .foot { border-top: 1px solid var(--border); margin-top: 32px; padding-top: 16px; color: var(--muted); font-size: 13px; }
 .foot p + p { margin-top: 6px; }
 
 @media (max-width: 860px) {
   .lede { grid-template-columns: 1fr; }
+  .kpi { grid-template-columns: repeat(2, 1fr); }
   .facts { border-left: 0; padding-left: 0; }
   .shell { padding: 16px 16px 32px; }
   .board th:nth-child(4), .board td:nth-child(4) { display: none; }

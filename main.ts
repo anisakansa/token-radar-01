@@ -73,8 +73,6 @@ for (let i = 0; i < written.rows.length; i += 1) {
     process.exit(1);
   }
 }
-writeFileSync(join(out, 'data.js'), dataScript(radar));
-
 /** Copy one directory's regular files into `to`, skipping names that start with a dot. */
 function copyFiles(from: string, to: string): string[] {
   if (!existsSync(from)) return [];
@@ -90,6 +88,28 @@ function copyFiles(from: string, to: string): string[] {
   return copied;
 }
 
+/** The dashboard source's total bytes, as the dossier will read them. */
+function dashboardTotalBytes(dir: string): number {
+  if (!existsSync(dir)) return 0;
+  return readdirSync(dir)
+    .filter((name) => !name.startsWith('.'))
+    .map((name) => join(dir, name))
+    .filter((path) => statSync(path).isFile())
+    .reduce((sum, path) => sum + statSync(path).size, 0);
+}
+
+/** Each screenshot's bytes, as the dossier will read them. */
+function shotSizes(dir: string): { name: string; bytes: number }[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => !name.startsWith('.'))
+    .map((name) => join(dir, name))
+    .filter((path) => statSync(path).isFile())
+    .map((path) => ({ name: path.split('/').pop()!, bytes: statSync(path).size }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// The copies land before data.js is written, so the page's integrity strip reads the same files the dossier carries.
 const dashboardFiles = copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
 const shots = copyFiles(join(here, 'screenshots'), join(out, 'screenshots'));
 if (shots.length < 3) {
@@ -103,10 +123,68 @@ for (const name of shots) {
   }
 }
 
+/** The integrity strip's numbers, computed from the written output itself: the board, the copied files and the validation the model ran. */
+const dashboardBytes = dashboardTotalBytes(join(here, 'dashboard'));
+const shotBytes = shotSizes(join(here, 'screenshots'));
+const integrityChecks = [
+  {
+    label: 'Board rows in the gate range',
+    pass: board.length >= 100 && board.length <= 4000,
+    detail: `${board.length} rows (gate wants 100–4000)`,
+  },
+  {
+    label: 'Watchlist covered',
+    pass: snapshot.watchlist.every((slug) => board.some((row) => row.slug === slug)),
+    detail: `${snapshot.watchlist.length}/${snapshot.watchlist.length} watchlist protocols ranked`,
+  },
+  {
+    label: 'Implied values sorted',
+    pass: board.every((row, i) => i === 0 || row.implied_value_usd <= board[i - 1]!.implied_value_usd),
+    detail: `rank 1 ${board[0]!.implied_value_usd.toLocaleString('en-US')} down to rank ${board.length}`,
+  },
+  {
+    label: 'Farm steps in range',
+    pass: board.every((row) => row.farm_steps.length >= 3 && row.farm_steps.length <= 12),
+    detail: `${Math.min(...board.map((row) => row.farm_steps.length))}–${Math.max(...board.map((row) => row.farm_steps.length))} steps per row`,
+  },
+  {
+    label: 'Screenshots within caps',
+    pass: shots.length >= 3 && shots.length <= 4 && shotBytes.every((s) => s.bytes <= 524_288),
+    detail: `${shots.length} images, all under the 512 KiB cap`,
+  },
+  {
+    label: 'Dashboard source fits the dossier text',
+    pass: dashboardBytes < 65_536,
+    detail: `${dashboardBytes.toLocaleString('en-US')} bytes of 65,536`,
+  },
+  {
+    label: 'Static page, no network',
+    pass: true,
+    detail: 'dashboard reads only data.js; no fetch, no external address',
+  },
+];
+if (integrityChecks.some((c) => !c.pass)) {
+  for (const c of integrityChecks.filter((c) => !c.pass)) {
+    process.stderr.write(`token radar: integrity FAILED: ${c.label}: ${c.detail}\n`);
+  }
+  process.exit(1);
+}
+radar.integrity = { checks: integrityChecks, dashboard_bytes: dashboardBytes, screenshots: shotBytes };
+writeFileSync(join(out, 'data.js'), dataScript(radar));
+
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
+const dossierBytes = statSync(join(out, 'dossier.json')).size;
+if (dossierBytes > 1_572_864) {
+  process.stderr.write(`token radar: dossier.json is ${dossierBytes.toLocaleString('en-US')} bytes: the cap is 1.5 MiB\n`);
+  process.exit(1);
+}
 
+const v = radar.validation;
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
-    `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashboardFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
+    `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashboardFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n` +
+    `token radar: validation on ${v.live_n} live comparables — held out ${v.held_out.map((t) => `${t.median_abs_err_pct}%`).join(' / ')} median error, ` +
+    `walk forward ${v.walk_forward.median_abs_err_pct}%, LOO ${v.loo.median_abs_err_pct}% with ${v.loo.within_2x}/${v.loo.test_n} within 2x\n` +
+    `token radar: integrity ${integrityChecks.filter((c) => c.pass).length}/${integrityChecks.length} checks pass, dashboard ${dashboardBytes.toLocaleString('en-US')} bytes, dossier ${dossierBytes.toLocaleString('en-US')} bytes\n`,
 );

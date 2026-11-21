@@ -1,7 +1,9 @@
 // Token Radar's page: a static board, no network. It reads window.RADAR (written by
 // main.ts from the same board the gate scores), renders the ranked pre-token board,
 // the live-token set it is measured against, and a detail view for every protocol
-// with the model's working and an eight-step farm plan.
+// with the model's working, an eight-step farm plan with its totalled cost and
+// verdict, and the model's validation — held out two ways, walk forward, a
+// leave-one-out backtest and a split test per term, all computed from the snapshot.
 //
 // The value model, in one place so the page and the program cannot drift:
 //   implied = TVL x multiple x growth x maturity
@@ -87,6 +89,44 @@
     'Set aside, not ranked: ' + setAside + ' protocols — wrapped, staked and bridged products, exchange-branded ' +
     'forks and versioned copies. They are transfers of a token that already trades, not a launch of their own, ' +
     'so ranking them would put WBTC and staked ETH at the top of a board about launches that have not happened yet.';
+
+  // ---- Model validation ------------------------------------------------------
+  var V = DATA.validation;
+  function errCell(t) { return t.median_abs_err_pct.toFixed(1) + '%'; }
+  function withinCell(t) { return t.within_2x + ' / ' + t.test_n + ' (' + t.within_2x_pct.toFixed(1) + '%)'; }
+  $('validation-intro').textContent =
+    'The model is tested on the snapshot\u2019s own live protocols — the ones whose market cap is known, so a ' +
+    'prediction can be scored. ' + V.live_n + ' live comparables. The multiple is fitted on one set and the ' +
+    'prediction is scored on another, so the numbers below are out-of-sample, not the model grading its own homework.';
+  var vRows = V.held_out.concat([{ name: V.walk_forward.name + ' (split ' + V.walk_forward.cut + ')', fit_n: V.walk_forward.fit_n, test_n: V.walk_forward.test_n, median_abs_err_pct: V.walk_forward.median_abs_err_pct, within_2x: V.walk_forward.within_2x, within_2x_pct: V.walk_forward.within_2x_pct }, V.loo]);
+  $('validation-table').querySelector('tbody').innerHTML = vRows.map(function (t) {
+    return '<tr><td>' + esc(t.name) + '</td><td class="num">' + t.fit_n + '</td><td class="num">' + t.test_n +
+      '</td><td class="num">' + errCell(t) + '</td><td class="num">' + withinCell(t) + '</td></tr>';
+  }).join('');
+  $('validation-ablation').textContent =
+    'Split test per term — the same leave-one-out pass with one term dropped (full model: ' + errCell(V.loo) + ' median error, ' +
+    V.loo.within_2x_pct.toFixed(1) + '% within 2\u00d7): ' +
+    V.ablation.map(function (a) { return a.term + ' ' + a.median_abs_err_pct.toFixed(1) + '% / ' + a.within_2x_pct.toFixed(1) + '%'; }).join(' · ') +
+    '. Each term moves the error by less than a point: the terms fine-tune a ranking inside a category, they do not rescue the spread.';
+  $('validation-read').textContent =
+    'Read it as a ranking yardstick, not a price forecast. The multiple comes from the market\u2019s own pricing and the ' +
+    'board ranks launches by it, but a launch\u2019s value will differ — the backtest says by how much, on average: ' +
+    'about nine-tenths of the market cap, with about one prediction in five landing within twice the real value.';
+
+  // ---- KPI strip + integrity strip -------------------------------------------
+  $('kpi-strip').innerHTML =
+    fact('Rows on the board', String(DATA.rows.length)) +
+    fact('Watchlist ranked', DATA.watchlist_size + ' / ' + DATA.watchlist_size) +
+    fact('Largest implied value', money(DATA.rows[0].value_model.implied_usd)) +
+    fact('Live comparables', String(V.live_n)) +
+    fact('Backtest median error', errCell(V.loo) + ' (LOO)') +
+    fact('Within 2\u00d7 of the real cap', V.loo.within_2x + ' / ' + V.loo.test_n);
+  if (DATA.integrity) {
+    $('integrity-strip').innerHTML = DATA.integrity.checks.map(function (c) {
+      return '<li class="' + (c.pass ? 'pass' : 'fail') + '"><span aria-hidden="true">' + (c.pass ? '\u2713' : '\u2717') +
+        '</span> ' + esc(c.label) + ' — ' + esc(c.detail) + '</li>';
+    }).join('');
+  }
 
   // ---- Filters ---------------------------------------------------------------
   var state = { q: '', category: '', chain: '', watchlist: false, tab: 'early', sort: 'rank', dir: 1 };
@@ -215,6 +255,28 @@
 
   // ---- Detail dialog ---------------------------------------------------------
   var dialog = $('detail');
+  /** The farm verdict: the plan's money totalled, set against the implied value it chases. */
+  function verdictHtml(r) {
+    var f = r.farm_total;
+    if (!f) return '';
+    var pctText = f.cost_pct_of_implied < 0.01 ? f.cost_pct_of_implied.toFixed(4) : f.cost_pct_of_implied.toFixed(2);
+    var verdict = f.cost_pct_of_implied < 0.01
+      ? 'a fraction of a percent of the value it targets'
+      : f.cost_pct_of_implied < 0.1
+        ? 'under a tenth of a percent of the value it targets'
+        : 'over a tenth of a percent of the value it targets';
+    return '<h3>Farm verdict</h3>' +
+      '<div class="verdict">' +
+      '<p><b>Deposit ' + moneyFull(f.deposit_usd) + '</b> · upfront ' + moneyFull(f.upfront_usd) +
+      ' · ' + moneyFull(f.weekly_usd) + ' / week \u00d7 ' + f.weeks + ' weeks · <b>all-in ' + moneyFull(f.total_usd) +
+      '</b> over ' + f.hold_days + ' days.</p>' +
+      '<p>That all-in cost is <b>' + pctText + '%</b> of the ' + moneyFull(r.value_model.implied_usd) + ' implied value — ' + verdict +
+      '. The dollars are trivial next to the model\u2019s value; the real cost is ' + f.hold_days +
+      ' days of attention, not the money.</p>' +
+      '</div>' +
+      '<p class="model-excl">Model check: the leave-one-out backtest over ' + V.loo.test_n + ' live protocols gives a median error of ' +
+      V.loo.median_abs_err_pct.toFixed(1) + '% and ' + V.loo.within_2x + ' within 2\u00d7 — read the implied value as a ranking yardstick, not a price.</p>';
+  }
   function openDetail(slug) {
     var r = DATA.rows.find(function (x) { return x.slug === slug; });
     if (!r) return;
@@ -237,6 +299,7 @@
       '<ol class="steps">' + r.farm_detail.map(function (s) {
         return '<li><span>' + esc(s.text) + '</span><span class="cost"><b>' + esc(s.cost) + '</b>' + esc(s.time) + '</span></li>';
       }).join('') + '</ol>' +
+      verdictHtml(r) +
       '<h3>What would change the rank</h3>' +
       '<p>A token listing takes the protocol off this board entirely. A sharp TVL move, a new chain, or a ' +
       'category multiple that shifts when its live comparables reprice would move the implied value — ' +
