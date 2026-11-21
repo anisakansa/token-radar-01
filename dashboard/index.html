@@ -24,33 +24,39 @@
     <dl class="facts" id="facts"></dl>
   </section>
 
-  <section class="model" aria-labelledby="model-heading">
-    <h2 id="model-heading">How the value is worked out</h2>
-    <p class="model-formula" id="model-formula"></p>
-    <p id="model-explain"></p>
-    <h3>Category multiples, from the live protocols in this snapshot</h3>
-    <p class="model-cal-note" id="cal-note"></p>
-    <div class="cal-wrap"><table class="cal" id="cal-table">
-      <thead><tr><th>Category</th><th>Live comparables</th><th>Median mcap / TVL</th><th>Multiple used</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-    <p class="model-excl" id="model-excl"></p>
+  <section class="strips" aria-label="Key figures and integrity checks">
+    <dl class="kpi" id="kpi-strip"></dl>
+    <ul class="integrity" id="integrity-strip"></ul>
   </section>
 
   <section class="validation" aria-labelledby="validation-heading">
     <h2 id="validation-heading">Model validation — scored against the live protocols</h2>
     <p id="validation-intro"></p>
     <div class="cal-wrap"><table class="cal" id="validation-table">
-      <thead><tr><th>Test</th><th class="num">Fit on</th><th class="num">Tested on</th><th class="num">Median error</th><th class="num">Within 2&times;</th></tr></thead>
+      <thead><tr><th>Test</th><th class="num">Fit on</th><th class="num">Tested on</th><th class="num">Median miss</th><th class="num">Within 3&times;</th><th class="num">Brier vs base rate</th></tr></thead>
       <tbody></tbody>
     </table></div>
-    <p class="model-excl" id="validation-ablation"></p>
+    <h3>Evidence — every term, kept or tested and dropped</h3>
+    <div class="cal-wrap"><table class="cal" id="evidence-table">
+      <thead><tr><th>Term</th><th class="num">LOO miss</th><th class="num">Walk-forward miss</th><th class="num">P(helps)</th><th>Verdict</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <p class="model-excl" id="validation-bootstrap"></p>
+    <p class="model-excl" id="validation-ranges"></p>
     <p class="model-excl" id="validation-read"></p>
   </section>
 
-  <section class="strips" aria-label="Key figures and integrity checks">
-    <dl class="kpi" id="kpi-strip"></dl>
-    <ul class="integrity" id="integrity-strip"></ul>
+  <section class="model" aria-labelledby="model-heading">
+    <h2 id="model-heading">How the value is worked out</h2>
+    <p class="model-formula" id="model-formula"></p>
+    <p id="model-explain"></p>
+    <h3>Category effects, from the live protocols in this snapshot</h3>
+    <p class="model-cal-note" id="cal-note"></p>
+    <div class="cal-wrap"><table class="cal" id="cal-table">
+      <thead><tr><th>Category</th><th>Live comparables</th><th>Median log-residual</th><th>Effect &times;</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <p class="model-excl" id="model-excl"></p>
   </section>
 
   <section class="controls" aria-label="Board controls">

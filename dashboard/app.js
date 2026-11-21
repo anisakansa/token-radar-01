@@ -2,18 +2,23 @@
 // main.ts from the same board the gate scores), renders the ranked pre-token board,
 // the live-token set it is measured against, and a detail view for every protocol
 // with the model's working, an eight-step farm plan with its totalled cost and
-// verdict, and the model's validation — held out two ways, walk forward, a
-// leave-one-out backtest and a split test per term, all computed from the snapshot.
+// break-even verdict, and the model's validation — held out two ways, walk
+// forward, a leave-one-out backtest, the flat baseline on the same splits, a
+// per-term evidence table, a negative control and a 200-refit bootstrap, all
+// computed from the snapshot.
 //
 // The value model, in one place so the page and the program cannot drift:
-//   implied = TVL x multiple x growth x maturity
-//   multiple = category median (live mcap/TVL, 3+ comparables, else the overall
-//              median 0.205), clamped to [0.05, 1.00], times 1 + 0.02 per extra
-//              chain (max 1.10)
-//   growth   = 1 + half the seven-day change, clamped to [-60%, +120%]
-//   maturity = 0.60 new, rising to 1.00 at three years with no token
-// The farm plan is generated in lib/model.ts and carried in the row; this page
-// only renders it, so the screenshots and the board can never disagree.
+//   log10(cap) = 3.3823 + 0.4721 x log10(TVL) + category effect
+//   implied = 10 ^ that; multiple = implied / TVL, so ~0.144 at $100M TVL
+//             and ~0.025 at $2.75B TVL — the multiple falls as TVL grows.
+//   category effect — the median residual of the size-curve fit in a category,
+//             shrunk by n/(n+10), and only when the category has at least two
+//             live comparables; otherwise 1.00.
+//   7d growth, age with no token and chain count were each fitted and tested
+//   and NOT kept: none of them improves out-of-sample prediction (see the
+//   evidence table). The farm plan is generated in lib/model.ts and carried
+//   in the row; this page only renders it, so the screenshots and the board
+//   can never disagree.
 
 (function () {
   'use strict';
@@ -52,9 +57,9 @@
 
   var belowFloor = DATA.rows.filter(function (r) { return r.tvl_usd < DATA.floor_usd; }).length;
   $('lede-text').textContent =
-    DATA.rows.length + ' protocols that record no token yet, ranked by an implied launch value. ' +
-    'The multiple for each category comes from the protocols in that category whose token already trades — ' +
-    'the market\u2019s own pricing, read off this snapshot — not from a list of names. ' +
+    DATA.rows.length + ' protocols that record no token yet, ranked by an implied launch value from a size curve ' +
+    'fitted on the snapshot\u2019s own live protocols: bigger protocols trade at a smaller multiple of TVL, ' +
+    'so the multiple falls from ~0.14 at $100M TVL to ~0.025 at $2.75B TVL. ' +
     'Every row carries an eight-step farm plan, sized to the protocol.';
   $('record-note').textContent =
     'A protocol \u201Crecords no token\u201D when the snapshot lists no market cap, no CoinGecko id and no symbol for it. ' +
@@ -65,25 +70,30 @@
     fact('On the watchlist', DATA.watchlist_size + ' · all ranked') +
     fact('Below the $50M floor', belowFloor + ' ranked too') +
     fact('Live-token protocols set aside', String(DATA.live_total)) +
-    fact('Overall median mcap / TVL', DATA.overall_median.toFixed(3)) +
+    fact('Flat median mcap / TVL (baseline)', DATA.overall_median.toFixed(3)) +
     fact('Largest implied value', money(DATA.rows[0].value_model.implied_usd));
   function fact(label, value) {
     return '<div><dt>' + esc(label) + '</dt><dd>' + esc(value) + '</dd></div>';
   }
 
   // ---- Model panel ---------------------------------------------------------
-  $('model-formula').textContent = 'implied value = TVL × multiple × growth × maturity';
+  var SF = DATA.size_fit;
+  $('model-formula').textContent = 'log10(market cap) = ' + SF.intercept.toFixed(4) + ' + ' + SF.slope.toFixed(4) +
+    ' × log10(TVL) + category effect  ·  implied value = 10 ^ that';
   $('model-explain').textContent =
-    'multiple — the category\u2019s median market-cap / TVL among its live protocols (three or more comparables, ' +
-    'otherwise the overall median ' + DATA.overall_median.toFixed(3) + '), clamped to [0.05, 1.00], times 1 + 0.02 per extra chain (max 1.10). ' +
-    'growth — 1 + half the seven-day change, clamped to [−60%, +120%]. ' +
-    'maturity — 0.60 for a new protocol, rising to 1.00 at three years with no token; an unknown listing date counts as one year.';
+    'The size curve is fitted by least squares on the ' + DATA.validation.live_n + ' live protocols in this snapshot: ' +
+    'a protocol at $100M TVL is priced at a multiple of ' + SF.mult_100m.toFixed(3) + ', at $2.75B TVL at ' +
+    SF.mult_2_75b.toFixed(3) + ' — the multiple falls as TVL grows, which a flat median (the overall ' +
+    DATA.overall_median.toFixed(3) + ' at every TVL) cannot see. The category effect is the median residual of ' +
+    'that fit inside the category, shrunk by n/(n+10), and only when the category has at least two live ' +
+    'comparables; with one or none the factor is 1.00. The 7d growth, the age with no token and the chain count ' +
+    'were each fitted and tested and NOT kept — none of them improves out-of-sample prediction (see the evidence table).';
   $('cal-note').textContent =
-    'Multiple used is the median clamped to [0.05, 1.00]; categories with fewer than three live comparables use the overall median. ' +
-    'Bridges and liquid-staking tokens price far above or below their TVL, which is why the clamp matters.';
+    'Effect × is 10 ^ the shrunk median log-residual; categories with fewer than two live comparables get 1.000. ' +
+    'The largest median residual belongs to a single live protocol at 378× its TVL — with one comparable it sets no effect.';
   $('cal-table').querySelector('tbody').innerHTML = DATA.calibration.map(function (c) {
     return '<tr><td>' + esc(c.category) + '</td><td class="num">' + c.live_n + '</td>' +
-      '<td class="num">' + c.median.toFixed(3) + '</td><td class="used">' + c.used.toFixed(3) + '</td></tr>';
+      '<td class="num">' + (c.median >= 0 ? '+' : '') + c.median.toFixed(3) + '</td><td class="used">' + c.used.toFixed(3) + '</td></tr>';
   }).join('');
   $('model-excl').textContent =
     'Set aside, not ranked: ' + setAside + ' protocols — wrapped, staked and bridged products, exchange-branded ' +
@@ -92,35 +102,58 @@
 
   // ---- Model validation ------------------------------------------------------
   var V = DATA.validation;
-  function errCell(t) { return t.median_abs_err_pct.toFixed(1) + '%'; }
-  function withinCell(t) { return t.within_2x + ' / ' + t.test_n + ' (' + t.within_2x_pct.toFixed(1) + '%)'; }
+  function missCell(t) { return '×' + t.median_miss_x.toFixed(2); }
+  function withinCell(t) { return t.within_3x + ' / ' + t.test_n + ' (' + t.within_3x_pct.toFixed(1) + '%)'; }
+  function brierCell(t) { return t.brier.toFixed(3) + ' vs ' + t.brier_base.toFixed(3); }
   $('validation-intro').textContent =
     'The model is tested on the snapshot\u2019s own live protocols — the ones whose market cap is known, so a ' +
-    'prediction can be scored. ' + V.live_n + ' live comparables. The multiple is fitted on one set and the ' +
-    'prediction is scored on another, so the numbers below are out-of-sample, not the model grading its own homework.';
-  var vRows = V.held_out.concat([{ name: V.walk_forward.name + ' (split ' + V.walk_forward.cut + ')', fit_n: V.walk_forward.fit_n, test_n: V.walk_forward.test_n, median_abs_err_pct: V.walk_forward.median_abs_err_pct, within_2x: V.walk_forward.within_2x, within_2x_pct: V.walk_forward.within_2x_pct }, V.loo]);
+    'prediction can be scored. ' + V.live_n + ' live comparables; fitted on one set, scored on another. ' +
+    'Median miss is the median factor by which the prediction is off; Brier scores the call "cap/TVL above the live median" vs always guessing the base rate (lower is better).';
+  var vRows = V.held_out.concat([
+    { name: V.walk_forward.name + ' (split ' + V.walk_forward.cut + ')', fit_n: V.walk_forward.fit_n, test_n: V.walk_forward.test_n, median_miss_x: V.walk_forward.median_miss_x, within_3x: V.walk_forward.within_3x, within_3x_pct: V.walk_forward.within_3x_pct, brier: V.walk_forward.brier, brier_base: V.walk_forward.brier_base },
+    V.loo,
+    { name: V.flat_walk_forward.name + ' (split ' + V.flat_walk_forward.cut + ')', fit_n: V.flat_walk_forward.fit_n, test_n: V.flat_walk_forward.test_n, median_miss_x: V.flat_walk_forward.median_miss_x, within_3x: V.flat_walk_forward.within_3x, within_3x_pct: V.flat_walk_forward.within_3x_pct, brier: V.flat_walk_forward.brier, brier_base: V.flat_walk_forward.brier_base },
+    V.flat_loo,
+  ]);
   $('validation-table').querySelector('tbody').innerHTML = vRows.map(function (t) {
     return '<tr><td>' + esc(t.name) + '</td><td class="num">' + t.fit_n + '</td><td class="num">' + t.test_n +
-      '</td><td class="num">' + errCell(t) + '</td><td class="num">' + withinCell(t) + '</td></tr>';
+      '</td><td class="num">' + missCell(t) + '</td><td class="num">' + withinCell(t) + '</td><td class="num">' + brierCell(t) + '</td></tr>';
   }).join('');
-  $('validation-ablation').textContent =
-    'Split test per term — the same leave-one-out pass with one term dropped (full model: ' + errCell(V.loo) + ' median error, ' +
-    V.loo.within_2x_pct.toFixed(1) + '% within 2\u00d7): ' +
-    V.ablation.map(function (a) { return a.term + ' ' + a.median_abs_err_pct.toFixed(1) + '% / ' + a.within_2x_pct.toFixed(1) + '%'; }).join(' · ') +
-    '. Each term moves the error by less than a point: the terms fine-tune a ranking inside a category, they do not rescue the spread.';
+  $('evidence-table').querySelector('tbody').innerHTML = V.ablation.map(function (a) {
+    var p = a.kept ? '—' : a.p_improves.toFixed(2);
+    return '<tr><td>' + esc(a.term) + '</td>' +
+      '<td class="num">×' + a.loo_miss_x.toFixed(2) + ' · ' + a.loo_within3_pct.toFixed(1) + '%</td>' +
+      '<td class="num">×' + a.wf_miss_x.toFixed(2) + ' · ' + a.wf_within3_pct.toFixed(1) + '%</td>' +
+      '<td class="num">' + p + '</td>' +
+      '<td>' + (a.kept ? '<b>KEPT</b> — ' : '<b>not kept</b> — ') + esc(a.note) + '</td></tr>';
+  }).join('');
+  var B = V.bootstrap;
+  $('validation-bootstrap').textContent =
+    'Bootstrap — 200 refits of the live set (resampled with replacement): size-curve slope ' +
+    B.slope_mean.toFixed(3) + ' ± ' + B.slope_se.toFixed(3) + '; multiple at $100M TVL ' +
+    B.mult100m_mean.toFixed(3) + ' ± ' + B.mult100m_se.toFixed(3) + '. Rank ranges over the same 200 refits: ' +
+    B.rank_ranges.map(function (r) { return r.name + ' #' + r.base_rank + ' (' + r.p5 + '–' + r.p95 + ')'; }).join(', ') + '.';
+  $('validation-ranges').textContent =
+    'Range honesty (leave-one-out, n=' + V.live_n + '): the predicted P25–P75 intervals hold ' +
+    (V.range_holds.p25_75 * 100).toFixed(1) + '% of the real caps (stated 50%); the P10–P90 intervals hold ' +
+    (V.range_holds.p10_90 * 100).toFixed(1) + '% (stated 80%). The intervals are honest about their width.';
   $('validation-read').textContent =
-    'Read it as a ranking yardstick, not a price forecast. The multiple comes from the market\u2019s own pricing and the ' +
-    'board ranks launches by it, but a launch\u2019s value will differ — the backtest says by how much, on average: ' +
-    'about nine-tenths of the market cap, with about one prediction in five landing within twice the real value.';
+    'Read it as a ranking yardstick, not a price forecast. The size curve beats the flat median out of sample on ' +
+    'every split — leave-one-out ×' + V.loo.median_miss_x.toFixed(2) + ' vs flat ×' + V.flat_loo.median_miss_x.toFixed(2) +
+    ', walk-forward ×' + V.walk_forward.median_miss_x.toFixed(2) + ' vs flat ×' + V.flat_walk_forward.median_miss_x.toFixed(2) +
+    ' — but the typical prediction is still off by a factor of about three, and the board ranks launches by the ' +
+    'model\u2019s value, it does not predict a price.';
 
   // ---- KPI strip + integrity strip -------------------------------------------
   $('kpi-strip').innerHTML =
     fact('Rows on the board', String(DATA.rows.length)) +
     fact('Watchlist ranked', DATA.watchlist_size + ' / ' + DATA.watchlist_size) +
     fact('Largest implied value', money(DATA.rows[0].value_model.implied_usd)) +
-    fact('Live comparables', String(V.live_n)) +
-    fact('Backtest median error', errCell(V.loo) + ' (LOO)') +
-    fact('Within 2\u00d7 of the real cap', V.loo.within_2x + ' / ' + V.loo.test_n);
+    fact('Total implied value', money(DATA.rows.reduce(function (s, r) { return s + r.implied_value_usd; }, 0))) +
+    fact('Median miss, LOO n=119', '×' + V.loo.median_miss_x.toFixed(2) + ' vs flat ×' + V.flat_loo.median_miss_x.toFixed(2)) +
+    fact('Within 3×, LOO n=119', V.loo.within_3x_pct.toFixed(1) + '% vs flat ' + V.flat_loo.within_3x_pct.toFixed(1) + '%') +
+    fact('Brier, LOO n=119', V.loo.brier.toFixed(3) + ' vs base ' + V.loo.brier_base.toFixed(3)) +
+    fact('Farms breaking even <1%', DATA.farm_breakeven_under_1pct + ' / ' + DATA.rows.length);
   if (DATA.integrity) {
     $('integrity-strip').innerHTML = DATA.integrity.checks.map(function (c) {
       return '<li class="' + (c.pass ? 'pass' : 'fail') + '"><span aria-hidden="true">' + (c.pass ? '\u2713' : '\u2717') +
@@ -255,46 +288,47 @@
 
   // ---- Detail dialog ---------------------------------------------------------
   var dialog = $('detail');
-  /** The farm verdict: the plan's money totalled, set against the implied value it chases. */
+  /** The farm verdict: the break-even against a T-bill and $25 an hour. */
   function verdictHtml(r) {
     var f = r.farm_total;
     if (!f) return '';
-    var pctText = f.cost_pct_of_implied < 0.01 ? f.cost_pct_of_implied.toFixed(4) : f.cost_pct_of_implied.toFixed(2);
-    var verdict = f.cost_pct_of_implied < 0.01
-      ? 'a fraction of a percent of the value it targets'
-      : f.cost_pct_of_implied < 0.1
-        ? 'under a tenth of a percent of the value it targets'
-        : 'over a tenth of a percent of the value it targets';
+    var pctText = f.breakeven_pct_of_implied < 0.01 ? f.breakeven_pct_of_implied.toFixed(4) : f.breakeven_pct_of_implied.toFixed(2);
     return '<h3>Farm verdict</h3>' +
       '<div class="verdict">' +
       '<p><b>Deposit ' + moneyFull(f.deposit_usd) + '</b> · upfront ' + moneyFull(f.upfront_usd) +
       ' · ' + moneyFull(f.weekly_usd) + ' / week \u00d7 ' + f.weeks + ' weeks · <b>all-in ' + moneyFull(f.total_usd) +
-      '</b> over ' + f.hold_days + ' days.</p>' +
-      '<p>That all-in cost is <b>' + pctText + '%</b> of the ' + moneyFull(r.value_model.implied_usd) + ' implied value — ' + verdict +
-      '. The dollars are trivial next to the model\u2019s value; the real cost is ' + f.hold_days +
-      ' days of attention, not the money.</p>' +
+      '</b> over ' + f.hold_days + ' days · ' + f.hours_total.toFixed(1) + ' hours of attention.</p>' +
+      '<p>At $25 an hour the time is worth ' + moneyFull(f.time_value_usd) + ', and the deposit would earn ' +
+      moneyFull(f.tbill_usd) + ' in a 5% T-bill over the hold. Break-even: <b>' + moneyFull(f.breakeven_usd) +
+      '</b> — ' + pctText + '% of the ' + moneyFull(r.value_model.implied_usd) + ' implied value. ' +
+      'The farm beats a T-bill and $25 an hour if the eventual claim is worth at least ' + moneyFull(f.breakeven_usd) +
+      '; no payout is assumed anywhere. Across the board, ' + DATA.farm_breakeven_under_1pct + ' of ' + DATA.rows.length +
+      ' farm plans break even below 1% of their implied value.</p>' +
       '</div>' +
-      '<p class="model-excl">Model check: the leave-one-out backtest over ' + V.loo.test_n + ' live protocols gives a median error of ' +
-      V.loo.median_abs_err_pct.toFixed(1) + '% and ' + V.loo.within_2x + ' within 2\u00d7 — read the implied value as a ranking yardstick, not a price.</p>';
+      '<p class="model-excl">Model check: the leave-one-out backtest over ' + V.loo.test_n + ' live protocols misses by a median factor of ×' +
+      V.loo.median_miss_x.toFixed(2) + ' (flat baseline ×' + V.flat_loo.median_miss_x.toFixed(2) + '), with ' +
+      V.loo.within_3x_pct.toFixed(1) + '% within 3× (flat ' + V.flat_loo.within_3x_pct.toFixed(1) +
+      '%) — read the implied value as a ranking yardstick, not a price.</p>';
   }
   function openDetail(slug) {
     var r = DATA.rows.find(function (x) { return x.slug === slug; });
     if (!r) return;
     var m = r.value_model;
     $('detail-title').textContent = r.name + (r.is_watchlist ? ' · Watchlist' : '');
-    var eq = moneyFull(r.tvl_usd) + ' × ' + m.multiple.toFixed(3) + ' × ' + m.growth.toFixed(3) + ' × ' + m.maturity.toFixed(3) +
-      ' = ' + moneyFull(m.implied_usd);
-    var breakdown = 'multiple ' + m.multiple.toFixed(3) + ' = category ' + m.cat_multiple.toFixed(3) +
-      ' (' + m.cat_basis + ') × chain factor ' + m.chain_factor.toFixed(2);
+    var sizeMultiple = m.multiple / m.cat_multiple;
+    var eq = moneyFull(r.tvl_usd) + ' × ' + sizeMultiple.toFixed(4) + ' (size curve) × ' + m.cat_multiple.toFixed(3) + ' (category) = ' + moneyFull(m.implied_usd);
+    var breakdown = 'size multiple ' + sizeMultiple.toFixed(4) + ' from log10(cap) = ' + DATA.size_fit.intercept.toFixed(4) +
+      ' + ' + DATA.size_fit.slope.toFixed(4) + ' × log10(TVL); category factor ' + m.cat_multiple.toFixed(3) +
+      ' (' + m.cat_basis + ')';
     $('detail-body').innerHTML =
       '<p>' + esc(r.name) + ' records no token yet. ' + esc(r.category || 'Uncategorised') + ' · ' +
       esc(r.chains.join(', ')) + ' · TVL ' + moneyFull(r.tvl_usd) + ' · seven-day change ' + pct(r.change_7d) +
-      ' · running ' + age(r.age_days) + ' with no token' + (r.age_days === null ? ' (listing date unknown, counted as one year)' : '') + '.' +
+      ' · running ' + age(r.age_days) + ' with no token' + (r.age_days === null ? ' (listing date unknown)' : '') + '.' +
       (r.is_watchlist ? ' On the snapshot\u2019s watchlist.' : ' Below the watchlist floor or outside it, ranked on the same model.') + '</p>' +
       '<h3>The working</h3>' +
       '<div class="equation">' + esc(eq) + '</div>' +
-      '<p>' + esc(breakdown) + '. Growth ' + m.growth.toFixed(3) + ' from a ' + pct(r.change_7d) + ' week; ' +
-      'maturity ' + m.maturity.toFixed(3) + ' from ' + age(r.age_days) + ' with no token.</p>' +
+      '<p>' + esc(breakdown) + '. The 7d growth, the age with no token and the chain count are not in the working: ' +
+      'each was fitted and tested and none of them improves out-of-sample prediction (see the evidence table).</p>' +
       '<h3>Farm plan — eight steps</h3>' +
       '<ol class="steps">' + r.farm_detail.map(function (s) {
         return '<li><span>' + esc(s.text) + '</span><span class="cost"><b>' + esc(s.cost) + '</b>' + esc(s.time) + '</span></li>';

@@ -184,7 +184,8 @@ const v = radar.validation;
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashboardFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n` +
-    `token radar: validation on ${v.live_n} live comparables — held out ${v.held_out.map((t) => `${t.median_abs_err_pct}%`).join(' / ')} median error, ` +
-    `walk forward ${v.walk_forward.median_abs_err_pct}%, LOO ${v.loo.median_abs_err_pct}% with ${v.loo.within_2x}/${v.loo.test_n} within 2x\n` +
+    `token radar: size curve log10(cap) = ${radar.size_fit.intercept} + ${radar.size_fit.slope} x log10(TVL); multiple at $100M TVL ${radar.size_fit.mult_100m}, at $2.75B TVL ${radar.size_fit.mult_2_75b}\n` +
+    `token radar: validation on ${v.live_n} live comparables — LOO median miss x${v.loo.median_miss_x} (flat x${v.flat_loo.median_miss_x}), within 3x ${v.loo.within_3x}/${v.loo.test_n} (flat ${v.flat_loo.within_3x}/${v.flat_loo.test_n}), ` +
+    `Brier ${v.loo.brier} vs base ${v.loo.brier_base}, walk forward x${v.walk_forward.median_miss_x} (flat x${v.flat_walk_forward.median_miss_x})\n` +
     `token radar: integrity ${integrityChecks.filter((c) => c.pass).length}/${integrityChecks.length} checks pass, dashboard ${dashboardBytes.toLocaleString('en-US')} bytes, dossier ${dossierBytes.toLocaleString('en-US')} bytes\n`,
 );
